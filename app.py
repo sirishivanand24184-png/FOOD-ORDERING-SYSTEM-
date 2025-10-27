@@ -170,24 +170,29 @@ def place_selected_items(user_id, selected_items, payment_method, coupon_code=No
         return
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
     try:
+        # Pick a random delivery partner
         dp_df = pd.read_sql("SELECT delivery_partner_id FROM Delivery_Partners", conn)
         if dp_df.empty:
-            # if no delivery partners, set None or 0 depending on your schema
             delivery_partner_id = None
         else:
             delivery_partner_id = int(random.choice(dp_df['delivery_partner_id']))
 
-        # call stored procedure once per selected cart item (keeps your existing DB logic)
+        # --- Fetch selected cart items (menu_id + quantity)
+        cart_items_query = f"SELECT menu_id, quantity FROM Cart WHERE cart_id IN ({','.join(['%s'] * len(selected_items))})"
+        cursor.execute(cart_items_query, selected_items)
+        cart_items = cursor.fetchall()
+
+        # --- Call your existing procedure for each item
         for _ in selected_items:
-            # your stored procedure PlaceOrderFromCart presumably moves cart -> orders
             cursor.callproc('PlaceOrderFromCart', [user_id, delivery_partner_id])
 
         conn.commit()
 
-        cursor.execute("SELECT MAX(order_id) FROM Orders WHERE user_id=%s", (user_id,))
-        last_order_id = cursor.fetchone()[0]
+        # --- Update the latest payment method and coupon
+        cursor.execute("SELECT MAX(order_id) AS oid FROM Orders WHERE user_id=%s", (user_id,))
+        last_order_id = cursor.fetchone()['oid']
 
         if last_order_id:
             cursor.execute(
@@ -196,7 +201,18 @@ def place_selected_items(user_id, selected_items, payment_method, coupon_code=No
             )
             conn.commit()
 
-        st.success("Selected items ordered successfully!")
+        # --- Update stock quantities in the Menu table
+        for item in cart_items:
+            menu_id = item['menu_id']
+            qty_ordered = int(item['quantity'])
+            cursor.execute("UPDATE Menu SET stock = GREATEST(stock - %s, 0) WHERE menu_id=%s", (qty_ordered, menu_id))
+        conn.commit()
+
+        # --- Clear ordered items from cart
+        cursor.execute(f"DELETE FROM Cart WHERE cart_id IN ({','.join(['%s'] * len(selected_items))})", selected_items)
+        conn.commit()
+
+        st.success("Selected items ordered successfully! Stock updated in menu.")
     except mysql.connector.Error as e:
         st.error(f"Error placing order: {e}")
     finally:
@@ -208,6 +224,7 @@ def place_selected_items(user_id, selected_items, payment_method, coupon_code=No
     except Exception:
         pass
     rerun_app()
+
 
 def get_order_items(user_id=None):
     conn = get_connection()
