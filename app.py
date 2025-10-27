@@ -299,69 +299,89 @@ def show_admin_portal():
                 st.success(f"{rest_name} deleted!")
                 rerun_app()
 
-       # --- MENU TAB ---
-    with tabs[1]:
-        rest_df = get_restaurants()
-        if not rest_df.empty:
-            rest_name = st.selectbox("Select Restaurant", rest_df['name'], key="menu_rest_select")
-            rest_id = int(rest_df[rest_df['name'] == rest_name]['restaurant_id'].values[0])
-            menu_df = get_menu_by_restaurant(rest_id)
-            st.dataframe(menu_df)
+# --- MENU TAB ---
+with tabs[1]:
+    rest_df = get_restaurants()
+    if not rest_df.empty:
+        rest_name = st.selectbox("Select Restaurant", rest_df['name'], key="menu_rest_select")
+        rest_id = int(rest_df[rest_df['name'] == rest_name]['restaurant_id'].values[0])
+        menu_df = get_menu_by_restaurant(rest_id)
+        st.dataframe(menu_df)
 
-            st.markdown("### ➕ Add New Menu Item")
-            name = st.text_input("Item Name", key="add_menu_name")
-            category = st.text_input("Category", key="add_menu_category")
-            price = st.number_input("Price", min_value=0, key="add_menu_price")
-            stock = st.number_input("Stock", min_value=0, key="add_menu_stock")
+        st.markdown("### ➕ Add New Menu Item")
+        name = st.text_input("Item Name", key="add_menu_name")
+        category = st.text_input("Category", key="add_menu_category")
+        price = st.number_input("Price (₹)", min_value=0.0, step=1.0, key="add_menu_price")
+        stock = st.number_input("Stock", min_value=0, step=1, key="add_menu_stock")
 
-            if st.button("Add Item", key="add_menu_btn"):
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO Menu (restaurant_id, name, category, price, stock) VALUES (%s,%s,%s,%s,%s)",
-                    (rest_id, name, category, price, stock)
-                )
-                conn.commit()
-                conn.close()
-                st.success("✅ Item added successfully!")
-                rerun_app()
+        if st.button("Add Item", key="add_menu_btn"):
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO Menu (restaurant_id, name, category, price, stock) VALUES (%s,%s,%s,%s,%s)",
+                (rest_id, name, category, price, stock)
+            )
+            conn.commit()
+            conn.close()
+            st.success("✅ Item added successfully!")
+            rerun_app()
 
-            if not menu_df.empty:
-                st.markdown("### ✏️ Update or Delete Menu Item")
-                menu_name = st.selectbox("Select Item", menu_df['name'], key="update_menu_select")
-                menu_id = int(menu_df[menu_df['name'] == menu_name]['menu_id'].values[0])
+        # --- Update/Delete Section ---
+        if not menu_df.empty:
+            st.markdown("---")
+            st.markdown("### ✏️ Update or 🗑️ Delete Menu Item")
 
-                # Fetch existing values
-                current_price = float(menu_df[menu_df['name'] == menu_name]['price'].values[0])
-                current_stock = int(menu_df[menu_df['name'] == menu_name]['stock'].values[0])
+            menu_name = st.selectbox("Select Item", menu_df['name'], key="update_menu_select")
+            menu_id = int(menu_df[menu_df['name'] == menu_name]['menu_id'].values[0])
 
-                new_price = st.number_input("New Price", min_value=0, value=current_price, key="update_menu_price")
-                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, key="update_menu_stock")
+            # Fetch current values
+            current_price = float(menu_df.loc[menu_df['menu_id'] == menu_id, 'price'].values[0])
+            current_stock = int(menu_df.loc[menu_df['menu_id'] == menu_id, 'stock'].values[0])
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Update Item", key="update_menu_btn"):
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
-                            (new_price, new_stock, menu_id)
-                        )
-                        conn.commit()
-                        conn.close()
-                        st.success("✅ Menu item updated successfully!")
-                        rerun_app()
-                with col2:
-                    if st.button("Delete Item", key="delete_menu_btn"):
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM Menu WHERE menu_id=%s", (menu_id,))
-                        conn.commit()
-                        conn.close()
-                        st.warning("⚠️ Menu item deleted successfully!")
-                        rerun_app()
-        else:
-            st.info("No restaurants found. Please add one first.")
+            # Number inputs with proper numeric type consistency
+            new_price = st.number_input(
+                "New Price (₹)",
+                min_value=0.0,
+                value=float(current_price),
+                step=1.0,
+                key="update_menu_price"
+            )
+            new_stock = st.number_input(
+                "New Stock",
+                min_value=0,
+                value=int(current_stock),
+                step=1,
+                key="update_menu_stock"
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("💾 Update Item", key="update_menu_btn"):
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
+                        (new_price, new_stock, menu_id)
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success(f"✅ '{menu_name}' updated successfully!")
+                    rerun_app()
+
+            with col2:
+                if st.button("🗑️ Delete Item", key="delete_menu_btn"):
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM Menu WHERE menu_id=%s", (menu_id,))
+                    conn.commit()
+                    conn.close()
+                    st.warning(f"'{menu_name}' deleted successfully!")
+                    rerun_app()
+
+    else:
+        st.warning("⚠️ No restaurants found. Please add one first.")
+
 
 
     # --- ORDERS TAB ---
