@@ -423,17 +423,16 @@ def show_restaurants_dropdown_menu():
         'Sandwich Stop': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sandwich-shop.jpg"
     }
 
-    restaurants = get_restaurants()
+    restaurants = get_restaurants()  # always fetch fresh from DB
     for _, row in restaurants.iterrows():
         with st.expander(f"{row['name']} - {row['address']}"):
             img_path = restaurant_images.get(row['name'])
             if img_path and os.path.exists(img_path):
-                img = Image.open(img_path)
-                img = img.resize((500, 300))
-                st.image(img)
+                st.image(img_path, width=500)
             else:
                 st.warning("Image not found for this restaurant.")
 
+            # always fetch latest menu to reflect updates
             menu_df = get_menu_by_restaurant(row['restaurant_id'])
             if menu_df.empty:
                 st.info("No menu available.")
@@ -447,15 +446,27 @@ def show_restaurants_dropdown_menu():
                             with col1:
                                 st.write(f"**{m['name']}** - ₹{m['price']} | Stock: {m['stock']}")
                             with col2:
-                                qty = st.number_input(f"Qty {m['menu_id']}", 1, m['stock'], key=f"qty_{m['menu_id']}")
-                                if st.button(f"Add to Cart {m['menu_id']}", key=f"add_{m['menu_id']}"):
+                                qty = st.number_input(
+                                    f"Qty_{m['menu_id']}",
+                                    min_value=1,
+                                    max_value=int(m['stock']),
+                                    value=1,
+                                    step=1,
+                                    key=f"qty_{m['menu_id']}"
+                                )
+                                # clean button name — no menu_id shown
+                                if st.button("Add to Cart", key=f"add_btn_{m['menu_id']}"):
                                     add_to_cart(user['user_id'], m['menu_id'], qty)
 
+            # reviews section
             reviews_df = get_reviews_by_restaurant(row['restaurant_id'])
             if not reviews_df.empty:
                 st.markdown("**Reviews:**")
                 for _, rev in reviews_df.iterrows():
-                    st.write(f"{rev['user_name']} ({rev['review_date'].strftime('%Y-%m-%d')}): ⭐{rev['rating']} — {rev['comment']}")
+                    st.write(
+                        f"⭐ **{rev['rating']}** - {rev['comment']}  "
+                        f"_(by {rev['user_name']} on {rev['review_date'].strftime('%Y-%m-%d')})_"
+                    )
 
 # --------------------------
 # CART
