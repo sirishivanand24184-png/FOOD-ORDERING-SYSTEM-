@@ -412,12 +412,17 @@ def show_restaurants_dropdown_menu():
                             with col1:
                                 st.write(f"**{m['name']}** - ₹{m['price']} | Stock: {m['stock']}")
                             with col2:
-                                qty = st.number_input(
-                                    f"qty_{m['menu_id']}", 1, int(m['stock']), 1, key=f"qty_{m['menu_id']}_user"
-                                )
-                                if st.button("Add to Cart", key=f"add_{m['menu_id']}_user"):
-                                    add_to_cart(user['user_id'], m['menu_id'], qty)
-
+                                # ✅ Fix: Prevent invalid range when stock = 0
+                                if int(m['stock']) > 0:
+                                    qty = st.number_input(
+                                        f"qty_{m['menu_id']}", min_value=1, max_value=int(m['stock']), value=1,
+                                        key=f"qty_{m['menu_id']}_user"
+                                    )
+                                    if st.button("Add to Cart", key=f"add_{m['menu_id']}_user"):
+                                        add_to_cart(user['user_id'], m['menu_id'], qty)
+                                else:
+                                    st.button("Out of Stock", disabled=True, key=f"out_{m['menu_id']}")
+                                    
             reviews_df = get_reviews_by_restaurant(row['restaurant_id'])
             if not reviews_df.empty:
                 st.markdown("**Reviews:**")
