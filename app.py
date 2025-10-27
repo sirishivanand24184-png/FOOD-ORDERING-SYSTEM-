@@ -3,7 +3,6 @@ import mysql.connector
 import pandas as pd
 import hashlib
 import random
-
 # --------------------------
 # RERUN FUNCTION
 # --------------------------
@@ -384,13 +383,13 @@ def show_restaurants_dropdown_menu():
 
     # Map restaurant name to image paths
     restaurant_images = {
-        'Pizza Palace': r'C:\Users\Dr Bharathi\Downloads\mixed-pizza-with-meat-chicek-olive-tomato-cheese.jpg',
-        'Sushi World': r'C:\Users\Dr Bharathi\Downloads\premium_photo-1668146927669-f2edf6e86f6f.jpeg',
-        'Burger Hub': r'C:\Users\Dr Bharathi\Downloads\images (1).jpeg',
-        'Curry House': r'C:\Users\Dr Bharathi\Downloads\images (2).jpeg',
-        'Taco Town': r'C:\Users\Dr Bharathi\Downloads\images (3).jpeg',
-        'Pasta Corner': r'C:\Users\Dr Bharathi\Downloads\bruna-branco-t8hTmte4O_g-unsplash.jpg',
-        'Sandwich Stop': r'C:\Users\Dr Bharathi\Downloads\360_F_258916556_B6oirjJOKQkaxs39KPi9wjf9ePlT7zF8.jpg'
+        'Pizza Palace': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\pizza-palace.jpg",
+        'Sushi World': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sushi-world.jpg",
+        'Burger Hub': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\burger-hub.jpeg",
+        'Curry House': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\curry-house.jpeg",
+        'Taco Town': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\taco.jpeg",
+        'Pasta Corner': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\pasta-corner.jpeg",
+        'Sandwich Stop': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sandwich shop.jpg"
     }
 
     restaurants = get_restaurants()
@@ -491,7 +490,7 @@ def show_order_history():
 # MAIN APP
 # --------------------------
 def main():
-    show_banner(r"C:\Users\Dr Bharathi\Downloads\istockphoto-1194822262-612x612.jpg")
+    show_banner(r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\banner.jpg")
     if 'admin' in st.session_state and st.session_state['admin']:
         show_admin_portal()
     elif 'user' in st.session_state and st.session_state['user']:
@@ -568,6 +567,8 @@ def signup_user(name, email, phone, address, password):
 # --------------------------
 # BANNER
 # --------------------------
+import os
+
 def show_banner(image_path):
     st.markdown("""
     <style>
@@ -577,7 +578,12 @@ def show_banner(image_path):
     .stDataFrame { border: 1px solid #ffb6c1; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
-    st.image(image_path, width=700)
+
+    if os.path.exists(image_path):
+        st.image(image_path, width=700)
+    else:
+        st.warning(f"⚠️ Banner image not found: {image_path}")
+
 
 # --------------------------
 # DATA FETCH HELPERS
