@@ -300,8 +300,8 @@ def show_admin_portal():
                 rerun_app()
 
 # --- MENU TAB ---
-with tabs[1]:
-    rest_df = get_restaurants()
+    with tabs[1]:
+        rest_df = get_restaurants()
     if not rest_df.empty:
         rest_name = st.selectbox("Select Restaurant", rest_df['name'], key="menu_rest_select")
         rest_id = int(rest_df[rest_df['name'] == rest_name]['restaurant_id'].values[0])
