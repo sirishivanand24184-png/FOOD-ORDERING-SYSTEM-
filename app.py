@@ -61,6 +61,46 @@ def signup_user(name, email, phone, address, password):
         conn.close()
 
 # --------------------------
+# LOGIN / SIGNUP
+# --------------------------
+def show_login_signup():
+    st.title("🍔 Food Ordering System")
+    choice = st.sidebar.selectbox("Select", ["Login", "Signup", "Admin Login"], key="login_select")
+
+    if choice == "Login":
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Login", key="login_btn"):
+            user = login_user(email, password)
+            if user:
+                st.session_state['user'] = user
+                st.success(f"Welcome {user['name']}!")
+                rerun_app()
+            else:
+                st.error("Invalid credentials")
+
+    elif choice == "Signup":
+        name = st.text_input("Name", key="signup_name")
+        email = st.text_input("Email", key="signup_email")
+        phone = st.text_input("Phone", key="signup_phone")
+        address = st.text_input("Address", key="signup_address")
+        password = st.text_input("Password", type="password", key="signup_password")
+        if st.button("Signup", key="signup_btn"):
+            if signup_user(name, email, phone, address, password):
+                st.success("Signup successful! Login now.")
+
+    elif choice == "Admin Login":
+        uname = st.text_input("Admin Username", key="admin_user")
+        pwd = st.text_input("Admin Password", type="password", key="admin_pass")
+        if st.button("Login as Admin", key="admin_login_btn"):
+            if uname == "admin" and pwd == "admin123":
+                st.session_state['admin'] = True
+                st.success("Admin logged in!")
+                rerun_app()
+            else:
+                st.error("Invalid admin credentials")
+
+# --------------------------
 # BANNER
 # --------------------------
 def show_banner(image_path):
@@ -237,7 +277,7 @@ def show_admin_portal():
 
     tabs = st.tabs(["Restaurants", "Menu", "Orders"])
 
-    # --- RESTAURANTS TAB ---
+    # RESTAURANTS TAB
     with tabs[0]:
         st.subheader("🏢 Manage Restaurants")
         rest_df = get_restaurants()
@@ -270,7 +310,7 @@ def show_admin_portal():
                 st.cache_data.clear()
                 rerun_app()
 
-    # --- MENU TAB ---
+    # MENU TAB
     with tabs[1]:
         rest_df = get_restaurants()
         if not rest_df.empty:
@@ -308,57 +348,31 @@ def show_admin_portal():
                 current_price = float(menu_df.loc[menu_df['menu_id'] == menu_id, 'price'].values[0])
                 current_stock = int(menu_df.loc[menu_df['menu_id'] == menu_id, 'stock'].values[0])
 
-                new_price = st.number_input("New Price (₹)", min_value=0.0, value=current_price, step=1.0,
-                                            key="update_menu_price")
-                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, step=1,
-                                            key="update_menu_stock")
+                new_price = st.number_input("New Price (₹)", min_value=0.0, value=current_price, step=1.0)
+                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, step=1)
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("💾 Update Item", key="update_menu_btn"):
+                    if st.button("💾 Update Item"):
                         conn = get_connection()
                         cur = conn.cursor()
                         cur.execute("UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
                                     (new_price, new_stock, menu_id))
                         conn.commit()
                         conn.close()
-                        st.success(f"✅ '{menu_name}' updated successfully!")
+                        st.success("✅ Item updated!")
                         st.cache_data.clear()
                         rerun_app()
-
                 with col2:
-                    if st.button("🗑️ Delete Item", key="delete_menu_btn"):
+                    if st.button("🗑️ Delete Item"):
                         conn = get_connection()
                         cur = conn.cursor()
                         cur.execute("DELETE FROM Menu WHERE menu_id=%s", (menu_id,))
                         conn.commit()
                         conn.close()
-                        st.warning(f"'{menu_name}' deleted successfully!")
+                        st.warning("🗑️ Item deleted!")
                         st.cache_data.clear()
                         rerun_app()
-        else:
-            st.warning("⚠️ No restaurants found. Please add one first.")
-
-    # --- ORDERS TAB ---
-    with tabs[2]:
-        df = get_order_items()
-        if df.empty:
-            st.info("No orders found.")
-        else:
-            grouped = df.groupby("order_id")
-            for order_id, group in grouped:
-                status = group["status"].iloc[0]
-                st.write(f"### Order #{order_id} | Status: {status}")
-                st.dataframe(group[['item_name', 'restaurant_name', 'quantity', 'total']])
-                col1, col2 = st.columns(2)
-                with col1:
-                    if status not in ["Delivered", "Cancelled"] and st.button(f"Mark Delivered #{order_id}",
-                                                                              key=f"adm_del_{order_id}"):
-                        update_order_status(order_id, "Delivered")
-                with col2:
-                    if status not in ["Delivered", "Cancelled"] and st.button(f"Cancel #{order_id}",
-                                                                              key=f"adm_can_{order_id}"):
-                        update_order_status(order_id, "Cancelled")
 
 # --------------------------
 # RESTAURANT BROWSING
