@@ -6,6 +6,11 @@ import random
 import os
 from PIL import Image
 
+# -------------------------------------------------------------------
+# CLEAR CACHE TO ALWAYS SHOW FRESH DB DATA
+# -------------------------------------------------------------------
+st.cache_data.clear()
+
 # --------------------------
 # RERUN FUNCTION
 # --------------------------
@@ -78,14 +83,16 @@ def show_banner(image_path):
 # --------------------------
 def get_restaurants():
     conn = get_connection()
-    df = pd.read_sql("SELECT * FROM Restaurants", conn)
+    df = pd.read_sql("SELECT * FROM Restaurants ORDER BY restaurant_id", conn)
     conn.close()
+    st.cache_data.clear()
     return df
 
 def get_menu_by_restaurant(restaurant_id):
     conn = get_connection()
-    df = pd.read_sql("SELECT * FROM Menu WHERE restaurant_id=%s AND stock>0", conn, params=(restaurant_id,))
+    df = pd.read_sql("SELECT * FROM Menu WHERE restaurant_id=%s ORDER BY menu_id", conn, params=(restaurant_id,))
     conn.close()
+    st.cache_data.clear()
     return df
 
 def get_reviews_by_restaurant(restaurant_id):
@@ -158,8 +165,7 @@ def place_selected_items(user_id, selected_items, payment_method, coupon_code=No
 
         conn.commit()
 
-        last_order_query = "SELECT MAX(order_id) AS last_order_id FROM Orders WHERE user_id=%s"
-        cursor.execute(last_order_query, (user_id,))
+        cursor.execute("SELECT MAX(order_id) FROM Orders WHERE user_id=%s", (user_id,))
         last_order_id = cursor.fetchone()[0]
 
         if last_order_id:
@@ -221,46 +227,6 @@ def submit_review(user_id, restaurant_id, rating, comment):
     rerun_app()
 
 # --------------------------
-# LOGIN / SIGNUP
-# --------------------------
-def show_login_signup():
-    st.title("🍔 Food Ordering System")
-    choice = st.sidebar.selectbox("Select", ["Login", "Signup", "Admin Login"], key="login_select")
-
-    if choice == "Login":
-        email = st.text_input("Email", key="login_email")
-        password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Login", key="login_btn"):
-            user = login_user(email, password)
-            if user:
-                st.session_state['user'] = user
-                st.success(f"Welcome {user['name']}!")
-                rerun_app()
-            else:
-                st.error("Invalid credentials")
-
-    elif choice == "Signup":
-        name = st.text_input("Name", key="signup_name")
-        email = st.text_input("Email", key="signup_email")
-        phone = st.text_input("Phone", key="signup_phone")
-        address = st.text_input("Address", key="signup_address")
-        password = st.text_input("Password", type="password", key="signup_password")
-        if st.button("Signup", key="signup_btn"):
-            if signup_user(name, email, phone, address, password):
-                st.success("Signup successful! Login now.")
-
-    elif choice == "Admin Login":
-        uname = st.text_input("Admin Username", key="admin_user")
-        pwd = st.text_input("Admin Password", type="password", key="admin_pass")
-        if st.button("Login as Admin", key="admin_login_btn"):
-            if uname == "admin" and pwd == "admin123":
-                st.session_state['admin'] = True
-                st.success("Admin logged in!")
-                rerun_app()
-            else:
-                st.error("Invalid admin credentials")
-
-# --------------------------
 # ADMIN PANEL
 # --------------------------
 def show_admin_portal():
@@ -287,6 +253,7 @@ def show_admin_portal():
             conn.commit()
             conn.close()
             st.success("✅ Restaurant added successfully!")
+            st.cache_data.clear()
             rerun_app()
 
         if not rest_df.empty:
@@ -300,6 +267,7 @@ def show_admin_portal():
                 conn.commit()
                 conn.close()
                 st.warning(f"'{rest_name}' deleted successfully!")
+                st.cache_data.clear()
                 rerun_app()
 
     # --- MENU TAB ---
@@ -327,9 +295,9 @@ def show_admin_portal():
                 conn.commit()
                 conn.close()
                 st.success("✅ Item added successfully!")
+                st.cache_data.clear()
                 rerun_app()
 
-            # --- Update/Delete Section ---
             if not menu_df.empty:
                 st.markdown("---")
                 st.markdown("### ✏️ Update or 🗑️ Delete Menu Item")
@@ -337,38 +305,27 @@ def show_admin_portal():
                 menu_name = st.selectbox("Select Item", menu_df['name'], key="update_menu_select")
                 menu_id = int(menu_df[menu_df['name'] == menu_name]['menu_id'].values[0])
 
-                # Fetch current values
                 current_price = float(menu_df.loc[menu_df['menu_id'] == menu_id, 'price'].values[0])
                 current_stock = int(menu_df.loc[menu_df['menu_id'] == menu_id, 'stock'].values[0])
 
-                new_price = st.number_input(
-                    "New Price (₹)",
-                    min_value=0.0,
-                    value=float(current_price),
-                    step=1.0,
-                    key="update_menu_price"
-                )
-                new_stock = st.number_input(
-                    "New Stock",
-                    min_value=0,
-                    value=int(current_stock),
-                    step=1,
-                    key="update_menu_stock"
-                )
+                new_price = st.number_input("New Price (₹)", min_value=0.0, value=current_price, step=1.0,
+                                            key="update_menu_price")
+                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, step=1,
+                                            key="update_menu_stock")
 
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("💾 Update Item", key="update_menu_btn"):
                         conn = get_connection()
                         cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
-                            (new_price, new_stock, menu_id)
-                        )
+                        cur.execute("UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
+                                    (new_price, new_stock, menu_id))
                         conn.commit()
                         conn.close()
                         st.success(f"✅ '{menu_name}' updated successfully!")
+                        st.cache_data.clear()
                         rerun_app()
+
                 with col2:
                     if st.button("🗑️ Delete Item", key="delete_menu_btn"):
                         conn = get_connection()
@@ -377,6 +334,7 @@ def show_admin_portal():
                         conn.commit()
                         conn.close()
                         st.warning(f"'{menu_name}' deleted successfully!")
+                        st.cache_data.clear()
                         rerun_app()
         else:
             st.warning("⚠️ No restaurants found. Please add one first.")
@@ -394,17 +352,13 @@ def show_admin_portal():
                 st.dataframe(group[['item_name', 'restaurant_name', 'quantity', 'total']])
                 col1, col2 = st.columns(2)
                 with col1:
-                    if status not in ["Delivered", "Cancelled"] and st.button(
-                        f"Mark Delivered #{order_id}", key=f"adm_del_{order_id}"):
+                    if status not in ["Delivered", "Cancelled"] and st.button(f"Mark Delivered #{order_id}",
+                                                                              key=f"adm_del_{order_id}"):
                         update_order_status(order_id, "Delivered")
-                        st.success(f"Order #{order_id} marked Delivered")
-                        rerun_app()
                 with col2:
-                    if status not in ["Delivered", "Cancelled"] and st.button(
-                        f"Cancel #{order_id}", key=f"adm_can_{order_id}"):
+                    if status not in ["Delivered", "Cancelled"] and st.button(f"Cancel #{order_id}",
+                                                                              key=f"adm_can_{order_id}"):
                         update_order_status(order_id, "Cancelled")
-                        st.warning(f"Order #{order_id} Cancelled")
-                        rerun_app()
 
 # --------------------------
 # RESTAURANT BROWSING
@@ -423,7 +377,7 @@ def show_restaurants_dropdown_menu():
         'Sandwich Stop': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sandwich-shop.jpg"
     }
 
-    restaurants = get_restaurants()  # always fetch fresh from DB
+    restaurants = get_restaurants()
     for _, row in restaurants.iterrows():
         with st.expander(f"{row['name']} - {row['address']}"):
             img_path = restaurant_images.get(row['name'])
@@ -432,13 +386,11 @@ def show_restaurants_dropdown_menu():
             else:
                 st.warning("Image not found for this restaurant.")
 
-            # always fetch latest menu to reflect updates
             menu_df = get_menu_by_restaurant(row['restaurant_id'])
             if menu_df.empty:
                 st.info("No menu available.")
             else:
-                categories = menu_df['category'].unique()
-                for cat in categories:
+                for cat in menu_df['category'].unique():
                     with st.expander(cat):
                         cat_items = menu_df[menu_df['category'] == cat]
                         for _, m in cat_items.iterrows():
@@ -447,26 +399,17 @@ def show_restaurants_dropdown_menu():
                                 st.write(f"**{m['name']}** - ₹{m['price']} | Stock: {m['stock']}")
                             with col2:
                                 qty = st.number_input(
-                                    f"Qty_{m['menu_id']}",
-                                    min_value=1,
-                                    max_value=int(m['stock']),
-                                    value=1,
-                                    step=1,
-                                    key=f"qty_{m['menu_id']}"
+                                    f"qty_{m['menu_id']}", 1, int(m['stock']), 1, key=f"qty_{m['menu_id']}_user"
                                 )
-                                # clean button name — no menu_id shown
-                                if st.button("Add to Cart", key=f"add_btn_{m['menu_id']}"):
+                                if st.button("Add to Cart", key=f"add_{m['menu_id']}_user"):
                                     add_to_cart(user['user_id'], m['menu_id'], qty)
 
-            # reviews section
             reviews_df = get_reviews_by_restaurant(row['restaurant_id'])
             if not reviews_df.empty:
                 st.markdown("**Reviews:**")
                 for _, rev in reviews_df.iterrows():
-                    st.write(
-                        f"⭐ **{rev['rating']}** - {rev['comment']}  "
-                        f"_(by {rev['user_name']} on {rev['review_date'].strftime('%Y-%m-%d')})_"
-                    )
+                    st.write(f"⭐ {rev['rating']} — {rev['comment']}  "
+                             f"(_by {rev['user_name']} on {rev['review_date'].strftime('%Y-%m-%d')}_)")
 
 # --------------------------
 # CART
@@ -512,44 +455,38 @@ def show_order_history():
         restaurants_in_order = order_items[['restaurant_name', 'restaurant_id']].drop_duplicates()
         rest_options = {row['restaurant_name']: row['restaurant_id'] for _, row in restaurants_in_order.iterrows()}
         if rest_options:
-            selected_restaurant = st.selectbox(f"Select Restaurant to Review for Order #{order_id}", list(rest_options.keys()), key=f"select_rest_{order_id}")
-            rating = st.slider(f"Rating for {selected_restaurant}", 1, 5, 5, key=f"rate_{order_id}")
-            comment = st.text_area(f"Comment for {selected_restaurant}", key=f"comment_{order_id}")
-            if st.button(f"Submit Review for {selected_restaurant}", key=f"review_{order_id}"):
+            selected_restaurant = st.selectbox(f"Leave a review for Order #{order_id}",
+                                               list(rest_options.keys()), key=f"review_rest_{order_id}")
+            rating = st.slider("Rating", 1, 5, 5, key=f"review_rate_{order_id}")
+            comment = st.text_area("Comment", key=f"review_comment_{order_id}")
+            if st.button(f"Submit Review for #{order_id}", key=f"review_btn_{order_id}"):
                 submit_review(user['user_id'], rest_options[selected_restaurant], rating, comment)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if order_status not in ["Delivered", "Cancelled"] and st.button(f"Mark Delivered #{order_id}", key=f"del_{order_id}"):
-                update_order_status(order_id, "Delivered")
-        with col2:
-            if order_status not in ["Delivered", "Cancelled"] and st.button(f"Cancel #{order_id}", key=f"can_{order_id}"):
-                update_order_status(order_id, "Cancelled")
-
 # --------------------------
-# MAIN APP
+# MAIN
 # --------------------------
 def main():
-    banner_path = r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\banner.jpg"
-    show_banner(banner_path)
+    st.sidebar.title("🍽️ Food Ordering System")
+
+    if 'user' not in st.session_state and 'admin' not in st.session_state:
+        show_banner(r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\banner.jpg")
+        show_login_signup()
+        return
 
     if 'admin' in st.session_state and st.session_state['admin']:
         show_admin_portal()
-    elif 'user' in st.session_state and st.session_state['user']:
-        user = st.session_state['user']
-        st.sidebar.write(f"👋 Hello, {user['name']}")
-        if st.sidebar.button("Logout", key="user_logout"):
-            st.session_state.clear()
-            rerun_app()
-        choice = st.sidebar.radio("Navigation", ["Browse Restaurants", "Cart", "Orders"], key="nav_radio")
-        if choice == "Browse Restaurants":
-            show_restaurants_dropdown_menu()
-        elif choice == "Cart":
-            show_cart()
-        elif choice == "Orders":
-            show_order_history()
-    else:
-        show_login_signup()
+        return
+
+    menu = st.sidebar.radio("Navigate", ["Browse Restaurants", "Cart", "Orders", "Logout"], key="main_menu")
+    if menu == "Browse Restaurants":
+        show_restaurants_dropdown_menu()
+    elif menu == "Cart":
+        show_cart()
+    elif menu == "Orders":
+        show_order_history()
+    elif menu == "Logout":
+        st.session_state.clear()
+        rerun_app()
 
 if __name__ == "__main__":
     main()
