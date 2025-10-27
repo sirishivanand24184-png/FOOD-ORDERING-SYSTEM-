@@ -7,9 +7,12 @@ import os
 from PIL import Image
 
 # -------------------------------------------------------------------
-# CLEAR CACHE TO ALWAYS SHOW FRESH DB DATA
+# Ensure fresh DB data each run (help avoid stale caches)
 # -------------------------------------------------------------------
-st.cache_data.clear()
+try:
+    st.cache_data.clear()
+except Exception:
+    pass
 
 # --------------------------
 # RERUN FUNCTION
@@ -61,6 +64,202 @@ def signup_user(name, email, phone, address, password):
         conn.close()
 
 # --------------------------
+# BANNER (visible on all pages)
+# --------------------------
+def show_banner(image_path):
+    st.markdown("""
+    <style>
+    .stApp { background: linear-gradient(135deg, #ffe4b5, #fff5ee); color: #222; }
+    .stButton>button { background-color: #ff6347; color: white; border-radius: 10px; padding: 8px 20px; border: none; }
+    .stButton>button:hover { background-color: #ff4500; color: white; }
+    .stDataFrame { border: 1px solid #ffb6c1; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    if os.path.exists(image_path):
+        try:
+            st.image(image_path, width=700)
+        except Exception as e:
+            st.warning(f"Banner image could not be displayed: {e}")
+    else:
+        st.warning(f"⚠️ Banner image not found: {image_path}")
+
+# --------------------------
+# DATA FETCH HELPERS (always fresh)
+# --------------------------
+def get_restaurants():
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM Restaurants ORDER BY restaurant_id", conn)
+    conn.close()
+    return df
+
+# include all menu items (so admin updates are visible even if stock=0)
+def get_menu_by_restaurant(restaurant_id):
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM Menu WHERE restaurant_id=%s ORDER BY menu_id", conn, params=(restaurant_id,))
+    conn.close()
+    return df
+
+def get_reviews_by_restaurant(restaurant_id):
+    conn = get_connection()
+    df = pd.read_sql("""
+        SELECT u.name AS user_name, r.rating, r.comment, r.review_date
+        FROM Reviews r
+        JOIN Users u ON r.user_id = u.user_id
+        WHERE r.restaurant_id=%s
+        ORDER BY r.review_date DESC
+    """, conn, params=(restaurant_id,))
+    conn.close()
+    return df
+
+# --------------------------
+# CART FUNCTIONS
+# --------------------------
+def add_to_cart(user_id, menu_id, quantity):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO Cart (user_id, menu_id, quantity) VALUES (%s,%s,%s)", (user_id, menu_id, quantity))
+        conn.commit()
+        st.success("Added to cart!")
+    except mysql.connector.Error:
+        # If you have a DB trigger to increment quantity, or constraint, keep message
+        st.warning("Item already in cart; quantity incremented automatically via trigger or DB rule.")
+    finally:
+        cursor.close()
+        conn.close()
+    # clear caches and rerun so cart & menu reflect correctly
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    rerun_app()
+
+def get_cart(user_id):
+    conn = get_connection()
+    df = pd.read_sql("""
+        SELECT c.cart_id, m.menu_id, m.name AS item_name, m.category, m.price, c.quantity,
+               (m.price * c.quantity) AS total, r.name AS restaurant_name
+        FROM Cart c
+        JOIN Menu m ON c.menu_id = m.menu_id
+        JOIN Restaurants r ON m.restaurant_id = r.restaurant_id
+        WHERE c.user_id=%s
+    """, conn, params=(user_id,))
+    conn.close()
+    return df
+
+def remove_cart_item(cart_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM Cart WHERE cart_id=%s", (cart_id,))
+    conn.commit()
+    conn.close()
+    st.info("Item removed from cart!")
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    rerun_app()
+
+# --------------------------
+# ORDER FUNCTIONS
+# --------------------------
+def place_selected_items(user_id, selected_items, payment_method, coupon_code=None):
+    if not selected_items:
+        st.warning("Please select at least one item to order.")
+        return
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        dp_df = pd.read_sql("SELECT delivery_partner_id FROM Delivery_Partners", conn)
+        if dp_df.empty:
+            # if no delivery partners, set None or 0 depending on your schema
+            delivery_partner_id = None
+        else:
+            delivery_partner_id = int(random.choice(dp_df['delivery_partner_id']))
+
+        # call stored procedure once per selected cart item (keeps your existing DB logic)
+        for _ in selected_items:
+            # your stored procedure PlaceOrderFromCart presumably moves cart -> orders
+            cursor.callproc('PlaceOrderFromCart', [user_id, delivery_partner_id])
+
+        conn.commit()
+
+        cursor.execute("SELECT MAX(order_id) FROM Orders WHERE user_id=%s", (user_id,))
+        last_order_id = cursor.fetchone()[0]
+
+        if last_order_id:
+            cursor.execute(
+                "UPDATE Payments SET method=%s, coupon_code=%s WHERE order_id=%s",
+                (payment_method, coupon_code, last_order_id)
+            )
+            conn.commit()
+
+        st.success("Selected items ordered successfully!")
+    except mysql.connector.Error as e:
+        st.error(f"Error placing order: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    rerun_app()
+
+def get_order_items(user_id=None):
+    conn = get_connection()
+    query = """
+        SELECT oi.order_item_id, o.order_id, m.name AS item_name, m.category, r.name AS restaurant_name,
+               oi.quantity, (oi.quantity*m.price) AS total, o.status, r.restaurant_id
+        FROM Order_Items oi
+        JOIN Orders o ON oi.order_id = o.order_id
+        JOIN Menu m ON oi.menu_id = m.menu_id
+        JOIN Restaurants r ON m.restaurant_id = r.restaurant_id
+    """
+    if user_id:
+        query += " WHERE o.user_id=%s ORDER BY o.order_id DESC"
+        df = pd.read_sql(query, conn, params=(user_id,))
+    else:
+        query += " ORDER BY o.order_id DESC"
+        df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+def update_order_status(order_id, new_status):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE Orders SET status=%s WHERE order_id=%s", (new_status, order_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    rerun_app()
+
+def submit_review(user_id, restaurant_id, rating, comment):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.callproc('AddReview', [user_id, restaurant_id, rating, comment])
+        conn.commit()
+        st.success("Review submitted successfully!")
+    except mysql.connector.Error as e:
+        st.error(f"Error submitting review: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    rerun_app()
+
+# --------------------------
 # LOGIN / SIGNUP
 # --------------------------
 def show_login_signup():
@@ -101,183 +300,18 @@ def show_login_signup():
                 st.error("Invalid admin credentials")
 
 # --------------------------
-# BANNER
-# --------------------------
-def show_banner(image_path):
-    st.markdown("""
-    <style>
-    .stApp { background: linear-gradient(135deg, #ffe4b5, #fff5ee); color: #222; }
-    .stButton>button { background-color: #ff6347; color: white; border-radius: 10px; padding: 8px 20px; border: none; }
-    .stButton>button:hover { background-color: #ff4500; color: white; }
-    .stDataFrame { border: 1px solid #ffb6c1; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    if os.path.exists(image_path):
-        st.image(image_path, width=700)
-    else:
-        st.warning(f"⚠️ Banner image not found: {image_path}")
-
-# --------------------------
-# DATA FETCH HELPERS
-# --------------------------
-def get_restaurants():
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM Restaurants ORDER BY restaurant_id", conn)
-    conn.close()
-    st.cache_data.clear()
-    return df
-
-def get_menu_by_restaurant(restaurant_id):
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM Menu WHERE restaurant_id=%s ORDER BY menu_id", conn, params=(restaurant_id,))
-    conn.close()
-    st.cache_data.clear()
-    return df
-
-def get_reviews_by_restaurant(restaurant_id):
-    conn = get_connection()
-    df = pd.read_sql("""
-        SELECT u.name AS user_name, r.rating, r.comment, r.review_date
-        FROM Reviews r
-        JOIN Users u ON r.user_id = u.user_id
-        WHERE r.restaurant_id=%s
-        ORDER BY r.review_date DESC
-    """, conn, params=(restaurant_id,))
-    conn.close()
-    return df
-
-# --------------------------
-# CART FUNCTIONS
-# --------------------------
-def add_to_cart(user_id, menu_id, quantity):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO Cart (user_id, menu_id, quantity) VALUES (%s,%s,%s)", (user_id, menu_id, quantity))
-        conn.commit()
-        st.success("Added to cart!")
-    except mysql.connector.Error:
-        st.warning("Item already in cart; quantity incremented automatically via trigger.")
-    finally:
-        cursor.close()
-        conn.close()
-    rerun_app()
-
-def get_cart(user_id):
-    conn = get_connection()
-    df = pd.read_sql("""
-        SELECT c.cart_id, m.menu_id, m.name AS item_name, m.category, m.price, c.quantity,
-               (m.price * c.quantity) AS total, r.name AS restaurant_name
-        FROM Cart c
-        JOIN Menu m ON c.menu_id = m.menu_id
-        JOIN Restaurants r ON m.restaurant_id = r.restaurant_id
-        WHERE c.user_id=%s
-    """, conn, params=(user_id,))
-    conn.close()
-    return df
-
-def remove_cart_item(cart_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM Cart WHERE cart_id=%s", (cart_id,))
-    conn.commit()
-    conn.close()
-    st.info("Item removed from cart!")
-    rerun_app()
-
-# --------------------------
-# ORDER FUNCTIONS
-# --------------------------
-def place_selected_items(user_id, selected_items, payment_method, coupon_code=None):
-    if not selected_items:
-        st.warning("Please select at least one item to order.")
-        return
-
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        dp_df = pd.read_sql("SELECT delivery_partner_id FROM Delivery_Partners", conn)
-        delivery_partner_id = int(random.choice(dp_df['delivery_partner_id']))
-
-        for _ in selected_items:
-            cursor.callproc('PlaceOrderFromCart', [user_id, delivery_partner_id])
-
-        conn.commit()
-
-        cursor.execute("SELECT MAX(order_id) FROM Orders WHERE user_id=%s", (user_id,))
-        last_order_id = cursor.fetchone()[0]
-
-        if last_order_id:
-            cursor.execute(
-                "UPDATE Payments SET method=%s, coupon_code=%s WHERE order_id=%s",
-                (payment_method, coupon_code, last_order_id)
-            )
-            conn.commit()
-
-        st.success("Selected items ordered successfully!")
-    except mysql.connector.Error as e:
-        st.error(f"Error placing order: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-
-    rerun_app()
-
-def get_order_items(user_id=None):
-    conn = get_connection()
-    query = """
-        SELECT oi.order_item_id, o.order_id, m.name AS item_name, m.category, r.name AS restaurant_name,
-               oi.quantity, (oi.quantity*m.price) AS total, o.status, r.restaurant_id
-        FROM Order_Items oi
-        JOIN Orders o ON oi.order_id = o.order_id
-        JOIN Menu m ON oi.menu_id = m.menu_id
-        JOIN Restaurants r ON m.restaurant_id = r.restaurant_id
-    """
-    if user_id:
-        query += " WHERE o.user_id=%s ORDER BY o.order_id DESC"
-        df = pd.read_sql(query, conn, params=(user_id,))
-    else:
-        query += " ORDER BY o.order_id DESC"
-        df = pd.read_sql(query, conn)
-    conn.close()
-    return df
-
-def update_order_status(order_id, new_status):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE Orders SET status=%s WHERE order_id=%s", (new_status, order_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    rerun_app()
-
-def submit_review(user_id, restaurant_id, rating, comment):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.callproc('AddReview', [user_id, restaurant_id, rating, comment])
-        conn.commit()
-        st.success("Review submitted successfully!")
-    except mysql.connector.Error as e:
-        st.error(f"Error submitting review: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-    rerun_app()
-
-# --------------------------
-# ADMIN PANEL
+# ADMIN PORTAL
 # --------------------------
 def show_admin_portal():
     st.header("👨‍💼 Admin Dashboard")
-    if st.sidebar.button("Logout", key="admin_logout"):
+    # Admin logout button in sidebar (always visible)
+    if st.sidebar.button("Logout (Admin)", key="admin_logout"):
         st.session_state.clear()
         rerun_app()
 
     tabs = st.tabs(["Restaurants", "Menu", "Orders"])
 
-    # RESTAURANTS TAB
+    # --- RESTAURANTS TAB ---
     with tabs[0]:
         st.subheader("🏢 Manage Restaurants")
         rest_df = get_restaurants()
@@ -293,7 +327,10 @@ def show_admin_portal():
             conn.commit()
             conn.close()
             st.success("✅ Restaurant added successfully!")
-            st.cache_data.clear()
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
             rerun_app()
 
         if not rest_df.empty:
@@ -307,10 +344,13 @@ def show_admin_portal():
                 conn.commit()
                 conn.close()
                 st.warning(f"'{rest_name}' deleted successfully!")
-                st.cache_data.clear()
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
                 rerun_app()
 
-    # MENU TAB
+    # --- MENU TAB ---
     with tabs[1]:
         rest_df = get_restaurants()
         if not rest_df.empty:
@@ -335,7 +375,10 @@ def show_admin_portal():
                 conn.commit()
                 conn.close()
                 st.success("✅ Item added successfully!")
-                st.cache_data.clear()
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
                 rerun_app()
 
             if not menu_df.empty:
@@ -348,36 +391,69 @@ def show_admin_portal():
                 current_price = float(menu_df.loc[menu_df['menu_id'] == menu_id, 'price'].values[0])
                 current_stock = int(menu_df.loc[menu_df['menu_id'] == menu_id, 'stock'].values[0])
 
-                new_price = st.number_input("New Price (₹)", min_value=0.0, value=current_price, step=1.0)
-                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, step=1)
+                new_price = st.number_input("New Price (₹)", min_value=0.0, value=current_price, step=1.0,
+                                            key="update_menu_price")
+                new_stock = st.number_input("New Stock", min_value=0, value=current_stock, step=1,
+                                            key="update_menu_stock")
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("💾 Update Item"):
+                    if st.button("💾 Update Item", key="update_menu_btn"):
                         conn = get_connection()
                         cur = conn.cursor()
                         cur.execute("UPDATE Menu SET price=%s, stock=%s WHERE menu_id=%s",
                                     (new_price, new_stock, menu_id))
                         conn.commit()
                         conn.close()
-                        st.success("✅ Item updated!")
-                        st.cache_data.clear()
+                        st.success(f"✅ '{menu_name}' updated successfully!")
+                        try:
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
                         rerun_app()
+
                 with col2:
-                    if st.button("🗑️ Delete Item"):
+                    if st.button("🗑️ Delete Item", key="delete_menu_btn"):
                         conn = get_connection()
                         cur = conn.cursor()
                         cur.execute("DELETE FROM Menu WHERE menu_id=%s", (menu_id,))
                         conn.commit()
                         conn.close()
-                        st.warning("🗑️ Item deleted!")
-                        st.cache_data.clear()
+                        st.warning(f"'{menu_name}' deleted successfully!")
+                        try:
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
                         rerun_app()
+        else:
+            st.warning("⚠️ No restaurants found. Please add one first.")
+
+    # --- ORDERS TAB ---
+    with tabs[2]:
+        df = get_order_items()
+        if df.empty:
+            st.info("No orders found.")
+        else:
+            grouped = df.groupby("order_id")
+            for order_id, group in grouped:
+                status = group["status"].iloc[0]
+                st.write(f"### Order #{order_id} | Status: {status}")
+                st.dataframe(group[['item_name', 'restaurant_name', 'quantity', 'total']])
+                col1, col2 = st.columns(2)
+                with col1:
+                    if status not in ["Delivered", "Cancelled"] and st.button(f"Mark Delivered #{order_id}",
+                                                                              key=f"adm_del_{order_id}"):
+                        update_order_status(order_id, "Delivered")
+                with col2:
+                    if status not in ["Delivered", "Cancelled"] and st.button(f"Cancel #{order_id}",
+                                                                              key=f"adm_can_{order_id}"):
+                        update_order_status(order_id, "Cancelled")
 
 # --------------------------
 # RESTAURANT BROWSING
 # --------------------------
 def show_restaurants_dropdown_menu():
+    # banner is shown in main(); this function preserves original layout and behaviour
     user = st.session_state['user']
     st.header("🍴 Browse Restaurants")
 
@@ -400,6 +476,7 @@ def show_restaurants_dropdown_menu():
             else:
                 st.warning("Image not found for this restaurant.")
 
+            # Always fetch fresh menu to reflect admin changes
             menu_df = get_menu_by_restaurant(row['restaurant_id'])
             if menu_df.empty:
                 st.info("No menu available.")
@@ -412,23 +489,32 @@ def show_restaurants_dropdown_menu():
                             with col1:
                                 st.write(f"**{m['name']}** - ₹{m['price']} | Stock: {m['stock']}")
                             with col2:
-                                # ✅ Fix: Prevent invalid range when stock = 0
-                                if int(m['stock']) > 0:
+                                # If stock is zero, show disabled Out of Stock button and avoid invalid number_input
+                                try:
+                                    stock_val = int(m['stock'])
+                                except Exception:
+                                    stock_val = 0
+                                if stock_val > 0:
                                     qty = st.number_input(
-                                        f"qty_{m['menu_id']}", min_value=1, max_value=int(m['stock']), value=1,
-                                        key=f"qty_{m['menu_id']}_user"
+                                        f"qty_{m['menu_id']}", min_value=1, max_value=stock_val, value=1,
+                                        step=1, key=f"qty_{m['menu_id']}_user"
                                     )
                                     if st.button("Add to Cart", key=f"add_{m['menu_id']}_user"):
                                         add_to_cart(user['user_id'], m['menu_id'], qty)
                                 else:
+                                    # disabled Out of Stock button for clarity
                                     st.button("Out of Stock", disabled=True, key=f"out_{m['menu_id']}")
-                                    
+
             reviews_df = get_reviews_by_restaurant(row['restaurant_id'])
             if not reviews_df.empty:
                 st.markdown("**Reviews:**")
                 for _, rev in reviews_df.iterrows():
-                    st.write(f"⭐ {rev['rating']} — {rev['comment']}  "
-                             f"(_by {rev['user_name']} on {rev['review_date'].strftime('%Y-%m-%d')}_)")
+                    # safe formatting of date if datetime type
+                    try:
+                        date_str = rev['review_date'].strftime('%Y-%m-%d')
+                    except Exception:
+                        date_str = str(rev['review_date'])
+                    st.write(f"⭐ {rev['rating']} — {rev['comment']}  (_by {rev['user_name']} on {date_str}_)")
 
 # --------------------------
 # CART
@@ -485,27 +571,40 @@ def show_order_history():
 # MAIN
 # --------------------------
 def main():
+    # Banner displayed on all pages
+    banner_path = r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\banner.jpg"
+    show_banner(banner_path)
+
     st.sidebar.title("🍽️ Food Ordering System")
 
+    # If no user/admin signed in -> show login/signup (login function sets session vars)
     if 'user' not in st.session_state and 'admin' not in st.session_state:
-        show_banner(r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\banner.jpg")
         show_login_signup()
         return
 
+    # If admin signed in -> admin portal
     if 'admin' in st.session_state and st.session_state['admin']:
         show_admin_portal()
         return
 
-    menu = st.sidebar.radio("Navigate", ["Browse Restaurants", "Cart", "Orders", "Logout"], key="main_menu")
-    if menu == "Browse Restaurants":
-        show_restaurants_dropdown_menu()
-    elif menu == "Cart":
-        show_cart()
-    elif menu == "Orders":
-        show_order_history()
-    elif menu == "Logout":
-        st.session_state.clear()
-        rerun_app()
+    # Normal user navigation (logout as sidebar button)
+    if 'user' in st.session_state and st.session_state['user']:
+        if st.sidebar.button("Logout", key="user_logout"):
+            st.session_state.clear()
+            rerun_app()
+            return
+
+        menu = st.sidebar.radio("Navigate", ["Browse Restaurants", "Cart", "Orders"], key="main_menu")
+        if menu == "Browse Restaurants":
+            show_restaurants_dropdown_menu()
+        elif menu == "Cart":
+            show_cart()
+        elif menu == "Orders":
+            show_order_history()
+        return
+
+    # Fallback
+    show_login_signup()
 
 if __name__ == "__main__":
     main()
