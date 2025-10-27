@@ -563,6 +563,7 @@ def show_cart():
 def show_order_history():
     user = st.session_state['user']
     st.header("📦 Order History")
+
     df = get_order_items(user['user_id'])
     if df.empty:
         st.info("No orders found.")
@@ -574,15 +575,34 @@ def show_order_history():
         st.subheader(f"Order #{order_id} - Status: {order_status}")
         st.dataframe(order_items[['item_name', 'restaurant_name', 'category', 'quantity', 'total']])
 
+        # --- Review Section ---
         restaurants_in_order = order_items[['restaurant_name', 'restaurant_id']].drop_duplicates()
         rest_options = {row['restaurant_name']: row['restaurant_id'] for _, row in restaurants_in_order.iterrows()}
         if rest_options:
-            selected_restaurant = st.selectbox(f"Leave a review for Order #{order_id}",
-                                               list(rest_options.keys()), key=f"review_rest_{order_id}")
+            selected_restaurant = st.selectbox(
+                f"Leave a review for Order #{order_id}",
+                list(rest_options.keys()),
+                key=f"review_rest_{order_id}"
+            )
             rating = st.slider("Rating", 1, 5, 5, key=f"review_rate_{order_id}")
             comment = st.text_area("Comment", key=f"review_comment_{order_id}")
             if st.button(f"Submit Review for #{order_id}", key=f"review_btn_{order_id}"):
                 submit_review(user['user_id'], rest_options[selected_restaurant], rating, comment)
+
+        # --- Action Buttons ---
+        col1, col2 = st.columns(2)
+        with col1:
+            if order_status not in ["Delivered", "Cancelled"] and st.button(
+                f"Mark Delivered #{order_id}", key=f"user_delivered_{order_id}"
+            ):
+                update_order_status(order_id, "Delivered")
+                st.success(f"✅ Order #{order_id} marked as Delivered!")
+        with col2:
+            if order_status not in ["Delivered", "Cancelled"] and st.button(
+                f"Cancel #{order_id}", key=f"user_cancel_{order_id}"
+            ):
+                update_order_status(order_id, "Cancelled")
+                st.warning(f"⚠️ Order #{order_id} Cancelled!")
 
 # --------------------------
 # MAIN
