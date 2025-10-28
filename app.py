@@ -164,57 +164,76 @@ def remove_cart_item(cart_id):
 # --------------------------
 # ORDER FUNCTIONS
 # --------------------------
-def place_selected_items(user_id, selected_items, payment_method, coupon_code=None):
-    if not selected_items:
-        st.warning("Please select at least one item to order.")
-        return
-
+def get_delivery_partners():
+    """
+    Fetch all available delivery partners from the database.
+    Returns a list of dictionaries with keys: delivery_partner_id, name.
+    """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # Pick a random delivery partner
-        dp_df = pd.read_sql("SELECT delivery_partner_id FROM Delivery_Partners", conn)
-        if dp_df.empty:
-            delivery_partner_id = None
-        else:
-            delivery_partner_id = int(random.choice(dp_df['delivery_partner_id']))
+        cursor.execute("SELECT delivery_partner_id, name FROM Delivery_Partners ORDER BY name;")
+        partners = cursor.fetchall()
+        return partners
+    except mysql.connector.Error as e:
+        st.error(f"❌ Error fetching delivery partners: {e}")
+        return []
+    finally:
+        cursor.close()
+        conn.close()
 
-        # --- Fetch selected cart items (menu_id + quantity)
-        cart_items_query = f"SELECT menu_id, quantity FROM Cart WHERE cart_id IN ({','.join(['%s'] * len(selected_items))})"
-        cursor.execute(cart_items_query, selected_items)
+def place_selected_items(user_id, payment_method, coupon_code=None):
+    """
+    Place an order for all items in the user's cart using stored procedure PlaceOrderFromCart.
+    User selects the delivery partner via UI.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # 1️⃣ Check if cart is empty
+        cursor.execute("SELECT * FROM Cart WHERE user_id=%s", (user_id,))
         cart_items = cursor.fetchall()
+        if not cart_items:
+            st.warning("Your cart is empty.")
+            return
 
-        # --- Call your existing procedure for each item
-        for _ in selected_items:
-            cursor.callproc('PlaceOrderFromCart', [user_id, delivery_partner_id])
+        # 2️⃣ Let user select delivery partner
+        partners = get_delivery_partners()
+        if not partners:
+            st.error("No delivery partners available right now.")
+            return
 
-        conn.commit()
+        partner_names = [p['name'] for p in partners]
+        selected_partner = st.selectbox("🚴 Select a delivery partner:", partner_names)
+        partner_id = next((p['delivery_partner_id'] for p in partners if p['name'] == selected_partner), None)
 
-        # --- Update the latest payment method and coupon
-        cursor.execute("SELECT MAX(order_id) AS oid FROM Orders WHERE user_id=%s", (user_id,))
-        last_order_id = cursor.fetchone()['oid']
+        # 3️⃣ Place order via stored procedure
+        if st.button("✅ Confirm and Place Order", use_container_width=True):
+            if not partner_id:
+                st.error("Please select a valid delivery partner.")
+                return
 
-        if last_order_id:
-            cursor.execute(
-                "UPDATE Payments SET method=%s, coupon_code=%s WHERE order_id=%s",
-                (payment_method, coupon_code, last_order_id)
-            )
+            cursor.callproc('PlaceOrderFromCart', (user_id, partner_id))
             conn.commit()
 
-        # --- Update stock quantities in the Menu table
-        for item in cart_items:
-            menu_id = item['menu_id']
-            qty_ordered = int(item['quantity'])
-            cursor.execute("UPDATE Menu SET stock = GREATEST(stock - %s, 0) WHERE menu_id=%s", (qty_ordered, menu_id))
-        conn.commit()
+            # 4️⃣ Fetch the latest order ID
+            cursor.execute("SELECT MAX(order_id) AS oid FROM Orders WHERE user_id=%s", (user_id,))
+            last_order_id = cursor.fetchone()['oid']
 
-        # --- Clear ordered items from cart
-        cursor.execute(f"DELETE FROM Cart WHERE cart_id IN ({','.join(['%s'] * len(selected_items))})", selected_items)
-        conn.commit()
+            # 5️⃣ Insert payment info
+            if last_order_id:
+                cursor.execute("""
+                    INSERT INTO Payments (order_id, amount, method, status)
+                    VALUES (%s, (SELECT total_amount FROM Orders WHERE order_id=%s), %s, 'Completed')
+                """, (last_order_id, last_order_id, payment_method))
+                conn.commit()
 
-        st.success("Selected items ordered successfully! Stock updated in menu.")
+            st.success(f"✅ Order placed successfully with {selected_partner}!")
+            st.balloons()
+            rerun_app()
+
     except mysql.connector.Error as e:
-        st.error(f"Error placing order: {e}")
+        st.error(f"❌ Error placing order: {e}")
     finally:
         cursor.close()
         conn.close()
@@ -223,53 +242,76 @@ def place_selected_items(user_id, selected_items, payment_method, coupon_code=No
         st.cache_data.clear()
     except Exception:
         pass
-    rerun_app()
 
 
 def get_order_items(user_id=None):
+    """
+    Fetch orders (for both user & admin).
+    Includes user, restaurant, and delivery partner info.
+    """
     conn = get_connection()
     query = """
-        SELECT oi.order_item_id, o.order_id, m.name AS item_name, m.category, r.name AS restaurant_name,
-               oi.quantity, (oi.quantity*m.price) AS total, o.status, r.restaurant_id
-        FROM Order_Items oi
-        JOIN Orders o ON oi.order_id = o.order_id
+        SELECT 
+            o.order_id,
+            o.status,
+            o.total_amount,
+            o.order_date,
+            u.name AS user_name,
+            d.name AS delivery_partner_name,
+            m.name AS item_name,
+            r.name AS restaurant_name,
+            oi.quantity,
+            (m.price * oi.quantity) AS total
+        FROM Orders o
+        JOIN Users u ON o.user_id = u.user_id
+        LEFT JOIN Delivery_Partners d ON o.delivery_partner_id = d.delivery_partner_id
+        JOIN Order_Items oi ON o.order_id = oi.order_id
         JOIN Menu m ON oi.menu_id = m.menu_id
         JOIN Restaurants r ON m.restaurant_id = r.restaurant_id
     """
+
     if user_id:
         query += " WHERE o.user_id=%s ORDER BY o.order_id DESC"
         df = pd.read_sql(query, conn, params=(user_id,))
     else:
         query += " ORDER BY o.order_id DESC"
         df = pd.read_sql(query, conn)
+
     conn.close()
     return df
 
+
 def update_order_status(order_id, new_status):
+    """Update the order's status and trigger history logging."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE Orders SET status=%s WHERE order_id=%s", (new_status, order_id))
     conn.commit()
     cursor.close()
     conn.close()
+
     try:
         st.cache_data.clear()
     except Exception:
         pass
+
     rerun_app()
 
+
 def submit_review(user_id, restaurant_id, rating, comment):
+    """Submit a user review via stored procedure AddReview."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
         cursor.callproc('AddReview', [user_id, restaurant_id, rating, comment])
         conn.commit()
-        st.success("Review submitted successfully!")
+        st.success("⭐ Review submitted successfully!")
     except mysql.connector.Error as e:
-        st.error(f"Error submitting review: {e}")
+        st.error(f"❌ Error submitting review: {e}")
     finally:
         cursor.close()
         conn.close()
+
     try:
         st.cache_data.clear()
     except Exception:
