@@ -508,36 +508,50 @@ DELETE FROM Cart WHERE user_id=1 AND menu_id=2;
 
 DELIMITER $$
 
+ALTER TABLE Payments
+ADD COLUMN coupon_code VARCHAR(50) NULL;
+
+SHOW CREATE PROCEDURE PlaceOrderFromCart;
+USE FoodOrdering;
+
+DROP PROCEDURE IF EXISTS PlaceOrderFromCart;
+DELIMITER //
+
 CREATE PROCEDURE PlaceOrderFromCart(
     IN p_user_id INT,
-    IN p_delivery_partner_id INT,
-    IN p_coupon_code VARCHAR(50)
+    IN p_delivery_partner_id INT
 )
 BEGIN
-    -- procedure logic
-END $$
+    DECLARE v_order_id INT;
 
+    -- 1. Create new order with assigned delivery partner
+    INSERT INTO Orders (user_id, total_amount, status, delivery_partner_id)
+    VALUES (p_user_id, 0.00, 'Pending', p_delivery_partner_id);
+
+    SET v_order_id = LAST_INSERT_ID();
+
+    -- 2. Copy cart items to Order_Items
+    INSERT INTO Order_Items (order_id, menu_id, quantity)
+    SELECT v_order_id, menu_id, quantity 
+    FROM Cart 
+    WHERE user_id = p_user_id;
+
+    -- 3. Update total in Orders
+    UPDATE Orders 
+    SET total_amount = GetOrderTotal(v_order_id)
+    WHERE order_id = v_order_id;
+
+    -- 4. Clear the user's cart
+    DELETE FROM Cart WHERE user_id = p_user_id;
+END;
+//
 DELIMITER ;
 
-CREATE TABLE Delivery_Partners (
-    delivery_partner_id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100),
-    phone VARCHAR(20),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-INSERT INTO Delivery_Partners (name, phone) VALUES
-('John Doe', '9000000001'),
-('Jane Smith', '9000000002'),
-('Mike Johnson', '9000000003'),
-('Sara Lee', '9000000004'),
-('Tom Brown', '9000000005'),
-('Linda White', '9000000006'),
-('Kevin Black', '9000000007');
 
-
-
-
+CALL PlaceOrderFromCart(1, 3);
+SELECT order_id, user_id, delivery_partner_id 
+FROM Orders 
+ORDER BY order_id DESC LIMIT 3;
 
 
 
