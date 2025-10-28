@@ -519,6 +519,22 @@ END $$
 
 DELIMITER ;
 
+CREATE TABLE Delivery_Partners (
+    delivery_partner_id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100),
+    phone VARCHAR(20),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+INSERT INTO Delivery_Partners (name, phone) VALUES
+('John Doe', '9000000001'),
+('Jane Smith', '9000000002'),
+('Mike Johnson', '9000000003'),
+('Sara Lee', '9000000004'),
+('Tom Brown', '9000000005'),
+('Linda White', '9000000006'),
+('Kevin Black', '9000000007');
+
 
 
 
