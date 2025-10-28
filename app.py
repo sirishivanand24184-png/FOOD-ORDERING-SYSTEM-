@@ -246,8 +246,7 @@ def place_selected_items(user_id, payment_method, coupon_code=None):
 
 def get_order_items(user_id=None):
     """
-    Fetch orders (for both user & admin).
-    Includes user, restaurant, and delivery partner info.
+    Fetch all orders with restaurant, user, and delivery partner info.
     """
     conn = get_connection()
     query = """
@@ -259,7 +258,9 @@ def get_order_items(user_id=None):
             u.name AS user_name,
             d.name AS delivery_partner_name,
             m.name AS item_name,
+            m.category,                     -- ✅ Include category here
             r.name AS restaurant_name,
+            r.restaurant_id,
             oi.quantity,
             (m.price * oi.quantity) AS total
         FROM Orders o
