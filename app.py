@@ -446,43 +446,44 @@ def show_admin_portal():
             st.warning("⚠️ No restaurants found. Please add one first.")
 
     # --- ORDERS TAB ---
-with tabs[2]:
-    st.subheader("📦 Manage Orders")
+    with tabs[2]:
+        st.subheader("📦 Manage Orders")
 
-    df = get_order_items()
-    if df.empty:
-        st.info("No orders found.")
-    else:
-        grouped = df.groupby("order_id")
+        df = get_order_items()
+        if df.empty:
+            st.info("No orders found.")
+        else:
+            grouped = df.groupby("order_id")
 
-        for order_id, group in grouped:
-            status = group["status"].iloc[0]
-            delivery_partner = group["delivery_partner_name"].iloc[0] if "delivery_partner_name" in group else "N/A"
+            for order_id, group in grouped:
+                status = group["status"].iloc[0]
+                delivery_partner = group["delivery_partner_name"].iloc[0] if "delivery_partner_name" in group else "N/A"
 
-            st.markdown(f"### 🧾 Order #{order_id}")
-            st.write(f"**Status:** {status}")
-            st.write(f"🛵 **Delivery Partner:** {delivery_partner}")
+                st.markdown(f"### 🧾 Order #{order_id}")
+                st.write(f"**Status:** {status}")
+                st.write(f"🛵 **Delivery Partner:** {delivery_partner}")
 
-            st.dataframe(
-                group[['item_name', 'restaurant_name', 'quantity', 'total']],
-                use_container_width=True
-            )
+                st.dataframe(
+                    group[['item_name', 'restaurant_name', 'quantity', 'total']],
+                    use_container_width=True
+                )
 
-            col1, col2 = st.columns(2)
+                col1, col2 = st.columns(2)
 
-            with col1:
-                if status not in ["Delivered", "Cancelled"]:
-                    if st.button(f"✅ Mark Delivered (#{order_id})", key=f"adm_del_{order_id}"):
-                        update_order_status(order_id, "Delivered")
-                        st.success(f"Order #{order_id} marked as Delivered!")
+                with col1:
+                    if status not in ["Delivered", "Cancelled"]:
+                        if st.button(f"✅ Mark Delivered (#{order_id})", key=f"adm_del_{order_id}"):
+                            update_order_status(order_id, "Delivered")
+                            st.success(f"Order #{order_id} marked as Delivered!")
 
-            with col2:
-                if status not in ["Delivered", "Cancelled"]:
-                    if st.button(f"❌ Cancel Order (#{order_id})", key=f"adm_can_{order_id}"):
-                        update_order_status(order_id, "Cancelled")
-                        st.warning(f"Order #{order_id} has been Cancelled!")
+                with col2:
+                    if status not in ["Delivered", "Cancelled"]:
+                        if st.button(f"❌ Cancel Order (#{order_id})", key=f"adm_can_{order_id}"):
+                            update_order_status(order_id, "Cancelled")
+                            st.warning(f"Order #{order_id} has been Cancelled!")
 
-            st.markdown("---")
+                st.markdown("---")
+
 
 # --------------------------
 # RESTAURANT BROWSING
