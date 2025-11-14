@@ -93,7 +93,6 @@ def get_restaurants():
     conn.close()
     return df
 
-# include all menu items (so admin updates are visible even if stock=0)
 def get_menu_by_restaurant(restaurant_id):
     conn = get_connection()
     df = pd.read_sql("SELECT * FROM Menu WHERE restaurant_id=%s ORDER BY menu_id", conn, params=(restaurant_id,))
@@ -116,19 +115,38 @@ def get_reviews_by_restaurant(restaurant_id):
 # CART FUNCTIONS
 # --------------------------
 def add_to_cart(user_id, menu_id, quantity):
+    """
+    Add item to cart. If the same (user_id, menu_id) already exists,
+    increment the quantity. Also set a session_state flag so rapid
+    double-fires won't create duplicates from repeated reruns.
+    """
+    # session key to prevent duplicate processing during the same run
+    key = f"added_{user_id}_{menu_id}"
+    if st.session_state.get(key):
+        # Already processed in this UI run
+        return
+
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO Cart (user_id, menu_id, quantity) VALUES (%s,%s,%s)", (user_id, menu_id, quantity))
+        # Cart has UNIQUE KEY (user_id, menu_id) so ON DUPLICATE KEY works
+        cursor.execute("""
+            INSERT INTO Cart (user_id, menu_id, quantity)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
+        """, (user_id, menu_id, quantity))
         conn.commit()
+        # Provide a simple message (no balloons)
         st.success("Added to cart!")
-    except mysql.connector.Error:
-        # If you have a DB trigger to increment quantity, or constraint, keep message
-        st.warning("Item already in cart; quantity incremented automatically via trigger or DB rule.")
+        # mark processed for this run (will reset on next rerun)
+        st.session_state[key] = True
+    except mysql.connector.Error as e:
+        st.error(f"DB error adding to cart: {e}")
     finally:
         cursor.close()
         conn.close()
-    # clear caches and rerun so cart & menu reflect correctly
+
+    # clear caches and trigger UI refresh
     try:
         st.cache_data.clear()
     except Exception:
@@ -182,83 +200,134 @@ def get_delivery_partners():
         cursor.close()
         conn.close()
 
-def place_selected_items(user_id, payment_method, coupon_code=None):
+def place_selected_items(user_id, selected_cart_ids, payment_method, coupon_code=None):
     """
-    Place an order for all items in the user's cart using stored procedure PlaceOrderFromCart.
-    User selects the delivery partner via UI.
+    Place order for selected cart rows. Applies coupon, tax, delivery fee
+    and stores final total in Orders and Payments.
     """
+    if not selected_cart_ids:
+        st.warning("No items selected.")
+        return
+
+    TAX_RATE = 0.05
+    DELIVERY_FEE = 30.00
+
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # 1️⃣ Check if cart is empty
-        cursor.execute("SELECT * FROM Cart WHERE user_id=%s", (user_id,))
-        cart_items = cursor.fetchall()
-        if not cart_items:
-            st.warning("Your cart is empty.")
-            return
+        # 1) Create order row (no delivery partner assigned)
+        cursor.execute(
+            "INSERT INTO Orders (user_id, total_amount, status, delivery_partner_id) VALUES (%s, %s, %s, %s)",
+            (user_id, 0.00, 'Pending', None)
+        )
+        conn.commit()
+        v_order_id = cursor.lastrowid
 
-        # 2️⃣ Let user select delivery partner
-        partners = get_delivery_partners()
-        if not partners:
-            st.error("No delivery partners available right now.")
-            return
+        # 1.a) Assign a delivery partner automatically (random)
+        cursor.execute("SELECT delivery_partner_id FROM Delivery_Partners ORDER BY RAND() LIMIT 1")
+        partner = cursor.fetchone()
+        delivery_partner_id = partner['delivery_partner_id'] if partner else None
+        cursor.execute("UPDATE Orders SET delivery_partner_id=%s WHERE order_id=%s", (delivery_partner_id, v_order_id))
+        conn.commit()
 
-        partner_names = [p['name'] for p in partners]
-        selected_partner = st.selectbox("🚴 Select a delivery partner:", partner_names)
-        partner_id = next((p['delivery_partner_id'] for p in partners if p['name'] == selected_partner), None)
+        # 2) Copy selected cart rows into Order_Items
+        placeholders = ",".join(["%s"] * len(selected_cart_ids))
+        insert_sql = f"""
+            INSERT INTO Order_Items (order_id, menu_id, quantity)
+            SELECT %s, menu_id, quantity FROM Cart
+            WHERE cart_id IN ({placeholders}) AND user_id = %s
+        """
+        params = [v_order_id] + selected_cart_ids + [user_id]
+        cursor.execute(insert_sql, params)
+        conn.commit()
 
-        # 3️⃣ Place order via stored procedure
-        if st.button("✅ Confirm and Place Order", use_container_width=True):
-            if not partner_id:
-                st.error("Please select a valid delivery partner.")
-                return
+        # 3) Compute subtotal for inserted items
+        cursor.execute("""
+            SELECT IFNULL(SUM(m.price * oi.quantity), 0.00) AS subtotal
+            FROM Order_Items oi
+            JOIN Menu m ON oi.menu_id = m.menu_id
+            WHERE oi.order_id = %s
+        """, (v_order_id,))
+        row = cursor.fetchone()
+        subtotal = float(row['subtotal'] or 0.0)
 
-            cursor.callproc('PlaceOrderFromCart', (user_id, partner_id))
-            conn.commit()
+        # 4) Coupon lookup + discount calculation (cap by max_discount_amount)
+        discount = 0.0
+        if coupon_code:
+            cursor.execute("""
+                SELECT * FROM Coupons
+                WHERE code=%s AND active=TRUE AND (expiry_date IS NULL OR expiry_date >= CURDATE())
+                LIMIT 1
+            """, (coupon_code,))
+            coupon = cursor.fetchone()
+            if coupon:
+                pct = float(coupon.get('discount_percent') or 0) / 100.0
+                max_disc = float(coupon.get('max_discount_amount') or 0.0)
+                discount = min(subtotal * pct, max_disc)
 
-            # 4️⃣ Fetch the latest order ID
-            cursor.execute("SELECT MAX(order_id) AS oid FROM Orders WHERE user_id=%s", (user_id,))
-            last_order_id = cursor.fetchone()['oid']
+        subtotal_after_coupon = max(subtotal - discount, 0.0)
+        tax_amount = subtotal_after_coupon * TAX_RATE
+        final_total = subtotal_after_coupon + tax_amount + (DELIVERY_FEE if subtotal > 0 else 0.0)
 
-            # 5️⃣ Insert payment info
-            if last_order_id:
-                cursor.execute("""
-                    INSERT INTO Payments (order_id, amount, method, status)
-                    VALUES (%s, (SELECT total_amount FROM Orders WHERE order_id=%s), %s, 'Completed')
-                """, (last_order_id, last_order_id, payment_method))
-                conn.commit()
+        # 5) Update Orders.total_amount with final_total
+        cursor.execute("UPDATE Orders SET total_amount=%s WHERE order_id=%s", (final_total, v_order_id))
+        conn.commit()
 
-            st.success(f"✅ Order placed successfully with {selected_partner}!")
-            st.balloons()
-            rerun_app()
+        # 6) Insert Payment record (include coupon_code if Payments table supports it)
+        try:
+            cursor.execute(
+                "INSERT INTO Payments (order_id, amount, method, status, coupon_code) VALUES (%s,%s,%s,%s,%s)",
+                (v_order_id, final_total, payment_method, 'Completed', coupon_code)
+            )
+        except mysql.connector.Error:
+            # Fallback if coupon_code column does not exist
+            cursor.execute(
+                "INSERT INTO Payments (order_id, amount, method, status) VALUES (%s,%s,%s,%s)",
+                (v_order_id, final_total, payment_method, 'Completed')
+            )
+        conn.commit()
+
+        # 7) Remove those cart rows
+        delete_sql = f"DELETE FROM Cart WHERE cart_id IN ({placeholders}) AND user_id = %s"
+        delete_params = selected_cart_ids + [user_id]
+        cursor.execute(delete_sql, delete_params)
+        conn.commit()
+
+        # success message (no balloons)
+        st.success(f"Order #{v_order_id} placed successfully! Final total: ₹{final_total:.2f}")
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        rerun_app()
 
     except mysql.connector.Error as e:
         st.error(f"❌ Error placing order: {e}")
+        conn.rollback()
     finally:
         cursor.close()
         conn.close()
 
-    try:
-        st.cache_data.clear()
-    except Exception:
-        pass
-
-
+# --------------------------
+# Fetch orders for display (this was missing earlier - ensure defined)
+# --------------------------
 def get_order_items(user_id=None):
     """
     Fetch all orders with restaurant, user, and delivery partner info.
+    Returns a flat dataframe with one row per order-item.
     """
     conn = get_connection()
     query = """
         SELECT 
             o.order_id,
+            o.user_id,
             o.status,
             o.total_amount,
             o.order_date,
             u.name AS user_name,
             d.name AS delivery_partner_name,
             m.name AS item_name,
-            m.category,                     -- ✅ Include category here
+            m.category,
             r.name AS restaurant_name,
             r.restaurant_id,
             oi.quantity,
@@ -281,7 +350,6 @@ def get_order_items(user_id=None):
     conn.close()
     return df
 
-
 def update_order_status(order_id, new_status):
     """Update the order's status and trigger history logging."""
     conn = get_connection()
@@ -297,7 +365,6 @@ def update_order_status(order_id, new_status):
         pass
 
     rerun_app()
-
 
 def submit_review(user_id, restaurant_id, rating, comment):
     """Submit a user review via stored procedure AddReview."""
@@ -515,24 +582,22 @@ def show_admin_portal():
 
                 with col1:
                     if status not in ["Delivered", "Cancelled"]:
-                        if st.button(f"✅ Mark Delivered (#{order_id})", key=f"adm_del_{order_id}"):
+                        if st.button(f" Mark Delivered (#{order_id})", key=f"adm_del_{order_id}"):
                             update_order_status(order_id, "Delivered")
                             st.success(f"Order #{order_id} marked as Delivered!")
 
                 with col2:
                     if status not in ["Delivered", "Cancelled"]:
-                        if st.button(f"❌ Cancel Order (#{order_id})", key=f"adm_can_{order_id}"):
+                        if st.button(f" Cancel Order (#{order_id})", key=f"adm_can_{order_id}"):
                             update_order_status(order_id, "Cancelled")
                             st.warning(f"Order #{order_id} has been Cancelled!")
 
                 st.markdown("---")
 
-
 # --------------------------
 # RESTAURANT BROWSING
 # --------------------------
 def show_restaurants_dropdown_menu():
-    # banner is shown in main(); this function preserves original layout and behaviour
     user = st.session_state['user']
     st.header("🍴 Browse Restaurants")
 
@@ -543,7 +608,7 @@ def show_restaurants_dropdown_menu():
         'Curry House': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\curry-house.jpeg",
         'Taco Town': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\taco.jpeg",
         'Pasta Corner': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\pasta-corner.jpeg",
-        'Sandwich Stop': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sandwich-shop.jpg"
+        'Sandwich Stop': r"C:\Users\Dr Bharathi\Desktop\FOOD ORDERING SYSTEM\images\sandwich-shop.png"
     }
 
     restaurants = get_restaurants()
@@ -574,14 +639,15 @@ def show_restaurants_dropdown_menu():
                                 except Exception:
                                     stock_val = 0
                                 if stock_val > 0:
+                                    # Use a friendly label "Quantity" (not qty_1 etc)
                                     qty = st.number_input(
-                                        f"qty_{m['menu_id']}", min_value=1, max_value=stock_val, value=1,
+                                        "Quantity", min_value=1, max_value=stock_val, value=1,
                                         step=1, key=f"qty_{m['menu_id']}_user"
                                     )
-                                    if st.button("Add to Cart", key=f"add_{m['menu_id']}_user"):
+                                    # safer Add to Cart button (unique per user & item)
+                                    if st.button("Add to Cart", key=f"add_{user['user_id']}_{m['menu_id']}"):
                                         add_to_cart(user['user_id'], m['menu_id'], qty)
                                 else:
-                                    # disabled Out of Stock button for clarity
                                     st.button("Out of Stock", disabled=True, key=f"out_{m['menu_id']}")
 
             reviews_df = get_reviews_by_restaurant(row['restaurant_id'])
@@ -601,23 +667,100 @@ def show_restaurants_dropdown_menu():
 def show_cart():
     user = st.session_state['user']
     st.header("🛒 Your Cart")
+
     cart_df = get_cart(user['user_id'])
     if cart_df.empty:
         st.info("Cart is empty.")
         return
-    selected_items = st.multiselect("Select items to order", cart_df['item_name'], key="cart_select")
-    selected_cart_ids = cart_df[cart_df['item_name'].isin(selected_items)]['cart_id'].tolist()
-    st.dataframe(cart_df[['item_name', 'restaurant_name', 'category', 'quantity', 'price', 'total']])
+
+    # Build unique options: label -> cart_id
+    # Keep labels clean: no #[id], no (x3). We'll show quantities in the preview table below.
+    options = {
+        f"{row.item_name} — {row.restaurant_name}": int(row.cart_id)
+        for _, row in cart_df.iterrows()
+    }
+    option_labels = list(options.keys())
+
+    # Selection by unique labels -> cart_ids
+    selected_labels = st.multiselect("Select items to order", option_labels, key="cart_select")
+    selected_cart_ids = [options[lbl] for lbl in selected_labels]
+
+    # Filter dataframe to only selected rows
+    if selected_cart_ids:
+        selected_cart_df = cart_df[cart_df['cart_id'].isin(selected_cart_ids)].copy()
+        st.subheader("Selected items")
+        # Show quantities and totals in table; this avoids needing qty in the label.
+        st.dataframe(selected_cart_df[['item_name','restaurant_name','category','quantity','price','total']])
+        subtotal = float(selected_cart_df['total'].sum())
+    else:
+        st.info("No items selected — pick items above to see a preview and total.")
+        selected_cart_df = pd.DataFrame()
+        subtotal = 0.0
+
+    # Remove buttons for each cart row (unique cart_id)
     for _, row in cart_df.iterrows():
         if st.button(f"Remove {row['item_name']}", key=f"remove_{row['cart_id']}"):
             remove_cart_item(row['cart_id'])
-    payment = st.selectbox("Payment Method", ["Credit Card", "Debit Card", "UPI", "Wallet", "Cash"], key="cart_payment")
-    coupon = st.text_input("Coupon (optional)", key="cart_coupon")
-    if st.button("Place Selected Order", key="cart_order_btn"):
-        if selected_cart_ids:
-            place_selected_items(user['user_id'], selected_cart_ids, payment, coupon)
-        else:
-            st.warning("Select at least one item to order.")
+            return  # Streamlit will rerun and reflect changes
+
+    # Payment and coupon input
+    payment = st.selectbox("Payment Method",
+                           ["Credit Card", "Debit Card", "UPI", "Wallet", "Cash"],
+                           key="cart_payment")
+    coupon_code = st.text_input("Coupon (optional)", key="cart_coupon").strip()
+    coupon_code = coupon_code if coupon_code else None
+
+    # Pricing rules
+    TAX_RATE = 0.05          # 5% tax
+    DELIVERY_FEE = 30.00     # flat delivery fee
+
+    # Helper: get coupon from DB
+    def lookup_coupon(code):
+        if not code:
+            return None
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("""
+                SELECT * FROM Coupons
+                WHERE code=%s AND active=TRUE AND (expiry_date IS NULL OR expiry_date >= CURDATE())
+                LIMIT 1
+            """, (code,))
+            return cur.fetchone()
+        except Exception:
+            return None
+        finally:
+            cur.close()
+            conn.close()
+
+    coupon = lookup_coupon(coupon_code)
+
+    # Compute discount (capped)
+    discount = 0.0
+    if coupon and subtotal > 0:
+        pct = float(coupon.get('discount_percent') or 0) / 100.0
+        max_disc = float(coupon.get('max_discount_amount') or 0.0)
+        discount = min(subtotal * pct, max_disc)
+
+    subtotal_after_coupon = max(subtotal - discount, 0.0)
+    tax_amount = subtotal_after_coupon * TAX_RATE
+    final_total = subtotal_after_coupon + tax_amount + (DELIVERY_FEE if subtotal > 0 else 0.0)
+
+    # Show breakdown
+    st.markdown("---")
+    st.markdown("### Price summary")
+    st.write(f"Subtotal: ₹{subtotal:.2f}")
+    st.write(f"Coupon discount: -₹{discount:.2f}  {'(' + coupon_code + ')' if coupon else ''}")
+    st.write(f"Subtotal after coupon: ₹{subtotal_after_coupon:.2f}")
+    st.write(f"Tax ({TAX_RATE*100:.0f}%): ₹{tax_amount:.2f}")
+    st.write(f"Delivery fee: ₹{(DELIVERY_FEE if subtotal > 0 else 0.0):.2f}")
+    st.markdown(f"**Final total: ₹{final_total:.2f}**")
+    st.markdown("---")
+
+    # Place order (disabled if no selection)
+    place_btn = st.button("Place Selected Order", key="cart_order_btn", disabled=(len(selected_cart_ids) == 0))
+    if place_btn:
+        place_selected_items(user['user_id'], selected_cart_ids, payment, coupon_code)
 
 # --------------------------
 # ORDER HISTORY
@@ -671,7 +814,6 @@ def show_order_history():
             ):
                 update_order_status(order_id, "Cancelled")
                 st.warning(f"⚠️ Order #{order_id} Cancelled!")
-
 
 # --------------------------
 # MAIN

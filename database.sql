@@ -142,23 +142,23 @@ CREATE TABLE Coupons (
 
 -- Users
 INSERT INTO Users (name, email, phone, address) VALUES
-('Alice', 'alice@example.com', '9876543210', '123 Main St, Delhi'),
-('Bob', 'bob@example.com', '9123456780', '456 Oak Rd, Mumbai'),
+('Alice', 'alice@example.com', '9876543210', '123 Main St, Bangalore'),
+('Bob', 'bob@example.com', '9123456780', '456 Oak Rd, Bangalore'),
 ('Charlie', 'charlie@example.com', '9988776655', '78 Park Lane, Bangalore'),
-('Diana', 'diana@example.com', '9871234567', '90 Elm St, Pune'),
-('Eve', 'eve@example.com', '9765432109', '21 Maple Ave, Chennai'),
-('Frank', 'frank@example.com', '9122334455', '33 Cedar Rd, Hyderabad'),
-('Grace', 'grace@example.com', '9233445566', '55 Spruce St, Kolkata');
+('Diana', 'diana@example.com', '9871234567', '90 Elm St, Bangalore'),
+('Eve', 'eve@example.com', '9765432109', '21 Maple Ave, Bangalore'),
+('Frank', 'frank@example.com', '9122334455', '33 Cedar Rd, Bangalore'),
+('Grace', 'grace@example.com', '9233445566', '55 Spruce St, Bangalore');
 
 -- Restaurants
 INSERT INTO Restaurants (name, address, phone) VALUES
-('Pizza Palace', '12 Baker St, Delhi', '9112345678'),
-('Sushi World', '34 Maple Ave, Mumbai', '9223456789'),
+('Pizza Palace', '12 Baker St, Bangalore', '9112345678'),
+('Sushi World', '34 Maple Ave, Bangalore', '9223456789'),
 ('Burger Hub', '56 Oak St, Bangalore', '9334455667'),
-('Curry House', '78 Pine Rd, Pune', '9445566778'),
-('Taco Town', '90 Cedar Ave, Chennai', '9556677889'),
-('Pasta Corner', '101 Main Rd, Hyderabad', '9667788990'),
-('Sandwich Stop', '202 Elm St, Kolkata', '9778899001');
+('Curry House', '78 Pine Rd, Bangalore', '9445566778'),
+('Taco Town', '90 Cedar Ave, Bangalore', '9556677889'),
+('Pasta Corner', '101 Main Rd, Bangalore', '9667788990'),
+('Sandwich Stop', '202 Elm St, Bangalore', '9778899001');
 
 -- Delivery partners
 INSERT INTO Delivery_Partners (name, phone) VALUES
@@ -552,6 +552,7 @@ CALL PlaceOrderFromCart(1, 3);
 SELECT order_id, user_id, delivery_partner_id 
 FROM Orders 
 ORDER BY order_id DESC LIMIT 3;
+
 
 
 
